@@ -1,3 +1,5 @@
+import type { CalendarEvent } from '../types/calendar';
+
 interface CalendarEventProps {
   event: CalendarEvent;
 }
