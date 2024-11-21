@@ -1,4 +1,5 @@
 // components/TimeSlotCell.tsx
+import type { CalendarEvent } from '../types/calendar';
 import { CalendarEventComponent } from './CalendarEvent';
 
 interface TimeSlotCellProps {
