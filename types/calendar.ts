@@ -1,4 +1,4 @@
-type CalendarEvent = {
+export type CalendarEvent = {
   id: string;
   subject: string;
   room: string;
@@ -16,7 +16,7 @@ type CalendarEvent = {
   description?: string;
 };
 
-interface TimeSlot {
+export interface TimeSlot {
   name: string;
   startHour: number;
   startMinute: number;
