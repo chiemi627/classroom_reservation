@@ -6,5 +6,6 @@ export const ROOMS = [
   { id: '507', label: '507' },
   { id: '509', label: '509' },
   { id: '520', label: '520' },
-  { id: '521', label: '521' }
+  { id: '521', label: '521' },
+  { id: '410', label: '410' },
 ] as const;
