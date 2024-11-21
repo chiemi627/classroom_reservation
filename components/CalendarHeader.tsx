@@ -26,7 +26,15 @@ export const CalendarHeader: React.FC<CalendarHeaderProps> = ({
         >
           ✏️ 予約する
         </a>
-      </div>
+      <a
+        href="https://forms.office.com/r/UDkx1C3VZA"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-flex items-center px-6 py-2.5 bg-sky-200 text-black font-medium rounded-md hover:bg-sky-200 transition-colors shadow-sm"
+      >
+        📕 一括予約
+      </a>
+</div>
     </div>
 
     <div className="flex justify-end mb-6">
