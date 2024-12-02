@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useCalendarEvents } from '../hooks/useCalendarEvents';
+import { useRoomFilter } from '../hooks/useRoomFilter'; 
 import { CalendarHeader } from './CalendarHeader';
 import { TableHeader } from './TableHeader';
 import { DateCell } from './DateCell';
@@ -13,13 +14,14 @@ import { ROOMS } from '../constants/rooms';
 
 export const TimetableCalendar = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedRooms, setSelectedRooms] = useState<string[]>(ROOMS.map(room => room.id)); // 初期値は全ての部屋を選択
+//  const [selectedRooms, setSelectedRooms] = useState<string[]>(ROOMS.map(room => room.id)); // 初期値は全ての部屋を選択
 
   const { events, loading, error } = useCalendarEvents(currentDate);
   const tableRef = useRef<HTMLDivElement>(null);
   const todayRowRef = useRef<HTMLTableRowElement>(null);
   
-
+  const {selectedRooms,updateRooms} = useRoomFilter();
+ 
   // useEffect(() => {
   //   if (!loading && tableRef.current && todayRowRef.current) {
   //     const today = new Date();
@@ -74,9 +76,9 @@ export const TimetableCalendar = () => {
         onCurrentMonth={() => setCurrentDate(new Date())}
         />      
 
-      <RoomFilter 
-        selectedRooms={selectedRooms}
-        onRoomChange={setSelectedRooms}
+        <RoomFilter 
+          selectedRooms={selectedRooms}
+          onRoomChange={updateRooms}
         />
       
       <div className="border border-gray-200 rounded-lg">

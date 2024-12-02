@@ -10,11 +10,14 @@ export const useRoomFilter = () => {
   const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
   const [isInitialized, setIsInitialized] = useState(false);
 
+  const roomsQuery = router.query.rooms;
+  const roomsQueryString = JSON.stringify(roomsQuery);
+
   // 初期化: URLパラメータ -> LocalStorage -> デフォルト値
   useEffect(() => {
     const initializeRooms = () => {
       // URLからの読み込み
-      const roomsParam = router.query.rooms;
+      const roomsParam = router.query.rooms;      
       if (roomsParam) {
         const roomsFromUrl = typeof roomsParam === 'string' 
           ? roomsParam.split(',')
@@ -41,7 +44,7 @@ export const useRoomFilter = () => {
     };
 
     initializeRooms();
-  }, [router.query.rooms]);
+  }, [router.isReady,roomsQueryString]);
 
   // 選択状態が変更されたときの処理
   const updateRooms = (newRooms: string[]) => {
@@ -65,6 +68,8 @@ export const useRoomFilter = () => {
     updateRooms([]);
   };
 
+  console.log(selectedRooms);
+  
   return {
     selectedRooms,
     updateRooms,
