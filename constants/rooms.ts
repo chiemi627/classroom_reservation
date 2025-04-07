@@ -1,5 +1,6 @@
 // constants/rooms.ts
 export const ROOMS = [
+  { id: '603', label: '603' },
   { id: '614', label: '614' },
   { id: '615', label: '615' },
   { id: '616', label: '616' },
