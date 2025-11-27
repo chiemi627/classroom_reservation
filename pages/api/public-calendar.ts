@@ -66,11 +66,16 @@ export default async function handler(
         console.warn('CALENDAR_REFRESH_TOKEN is not set; refresh endpoint is unprotected');
       }
 
-      // 強制更新を実行して結果を返す
-      const r = await calendarStore.fetchAndStore(calendarUrl);
-      if (!r.ok) {
-        return res.status(500).json({ error: '強制更新に失敗しました', details: r.error });
-      }
+      // 強制更新は非同期でトリガ（ワークフローがタイムアウトするのを防ぐため、即時に 202 を返す）
+      // 実行中の結果はログに記録される
+      calendarStore.fetchAndStore(calendarUrl)
+        .then(r => {
+          if (!r.ok) console.error('Forced refresh failed:', r.error);
+          else console.log(`Forced refresh completed, ${r.count} events`);
+        })
+        .catch(err => console.error('Forced refresh exception:', err));
+
+      return res.status(202).json({ ok: true, message: 'Refresh started' });
     }
 
     // まずはストアからイベントを取得
