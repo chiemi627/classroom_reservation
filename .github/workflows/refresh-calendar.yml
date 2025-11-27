@@ -23,5 +23,13 @@ jobs:
             echo "Error: CALENDAR_REFRESH_TOKEN secret is not set" >&2
             exit 1
           fi
-          echo "Calling $SITE_URL/api/public-calendar?refresh=1"
-          curl -fS --retry 3 "https://${SITE_URL}/api/public-calendar?refresh=1&token=${TOKEN}"
+          # Normalize SITE_URL: allow either 'example.com' or 'https://example.com'
+          if echo "$SITE_URL" | grep -qE '^https?://'; then
+            base_url="$SITE_URL"
+          else
+            base_url="https://${SITE_URL}"
+          fi
+          # Remove trailing slash if present
+          base_url="${base_url%/}"
+          echo "Calling ${base_url}/api/public-calendar?refresh=1"
+          curl -fS --retry 3 "${base_url}/api/public-calendar?refresh=1&token=${TOKEN}"
