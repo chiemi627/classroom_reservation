@@ -22,26 +22,32 @@ export const TimetableCalendar = () => {
   
   const {selectedRooms,updateRooms} = useRoomFilter();
  
-  // useEffect(() => {
-  //   if (!loading && tableRef.current && todayRowRef.current) {
-  //     const today = new Date();
-  //     if (
-  //       today.getMonth() === currentDate.getMonth() &&
-  //       today.getFullYear() === currentDate.getFullYear()
-  //     ) {
-  //       const tableTop = tableRef.current.getBoundingClientRect().top;
-  //       const rowTop = todayRowRef.current.getBoundingClientRect().top;
+  useEffect(() => {
+    // 自動スクロール: 読み込み完了後に当月かつ当日の行があればスクロールする
+    if (loading) return;
+    if (!tableRef.current || !todayRowRef.current) return;
 
-        
-  //       const scrollTop = rowTop - tableTop - 100;
-
-  //       tableRef.current.scrollTo({
-  //         top: scrollTop,
-  //         behavior: 'smooth'
-  //       });
-  //     }
-  //   }
-  // }, [loading, currentDate]);
+    const today = new Date();
+    if (
+      today.getMonth() === currentDate.getMonth() &&
+      today.getFullYear() === currentDate.getFullYear()
+    ) {
+      // 少し遅らせてレイアウト安定後にスクロール（必要なら調整）
+      setTimeout(() => {
+        try {
+          // scrollIntoView を使うと親のスクロールコンテナに対して適切にスクロールされる
+          todayRowRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (e) {
+          // フォールバック: tableRef の scrollTop を直接操作
+          const table = tableRef.current!;
+          const row = todayRowRef.current!;
+          const rowOffset = row.getBoundingClientRect().top - table.getBoundingClientRect().top;
+          const scrollTop = rowOffset - table.clientHeight / 2 + row.clientHeight / 2;
+          table.scrollTo({ top: scrollTop, behavior: 'smooth' });
+        }
+      }, 50);
+    }
+  }, [loading, currentDate, events]);
 
   const getEventsForTimeSlot = (date: Date, timeSlot: TimeSlot): CalendarEvent[] => {
     return events.filter(event => {
@@ -94,7 +100,7 @@ export const TimetableCalendar = () => {
                 return (
                   <tr 
                     key={day.getTime()} 
-                    ref={isToday ? todayRowRef : null}
+                    ref={isTodayRow ? todayRowRef : null}
                     className={`
                       ${rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50'}
                       ${isTodayRow ? 'relative' : ''}
