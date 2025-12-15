@@ -32,4 +32,4 @@ jobs:
           # Remove trailing slash if present
           base_url="${base_url%/}"
           echo "Calling ${base_url}/api/public-calendar?refresh=1"
-          curl -fS --retry 3 "${base_url}/api/public-calendar?refresh=1&token=${TOKEN}"
+          curl -fS --retry 3 "${base_url}/api/public-calendar?refresh=1&token=${TOKEN}&fetchTimeoutMs=120000&fetchRetries=5"
