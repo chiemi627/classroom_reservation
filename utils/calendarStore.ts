@@ -93,7 +93,7 @@ async function saveToDisk() {
   }
 }
 
-export async function fetchAndStore(calendarUrl: string) {
+export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: number; retries?: number }) {
   try {
     // Some environments (Vercel) may fail when node-ical's internal fetch (axios)
     // encounters very large responses. Work around by fetching the ICS text
@@ -101,38 +101,84 @@ export async function fetchAndStore(calendarUrl: string) {
     // with node-ical's parser to avoid axios maxContentLength issues.
     let eventsObj: Record<string, any> | null = null;
 
-    try {
-      if (typeof fetch === 'function') {
-        const controller = new AbortController();
-        const timeoutMs = 30_000; // 30s
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
-        const resp = await fetch(calendarUrl, { signal: controller.signal });
-        clearTimeout(timeout);
+  // Configuration via env, overridable per-call via opts
+  const fetchTimeoutMs = Number(opts?.timeoutMs ?? process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 60000); // 60s default
+  const maxRetries = Number(opts?.retries ?? process.env.CALENDAR_FETCH_RETRIES ?? 3);
 
-        if (!resp.ok) throw new Error(`Failed to fetch ICS: ${resp.status} ${resp.statusText}`);
-        const txt = await resp.text();
-        // node-ical exposes a parseICS-like function; use it if available.
-        // `ical.parseICS` exists in many versions; guard access to avoid TS error.
+    const tryFetchTextWithRetries = async (url: string) => {
+      let attempt = 0;
+      const backoff = (n: number) => 200 * Math.pow(2, n); // 200ms, 400ms, 800ms...
+      while (attempt < maxRetries) {
+        attempt += 1;
+        try {
+          if (typeof fetch !== 'function') throw new Error('global fetch not available');
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+          const resp = await fetch(url, { signal: controller.signal });
+          clearTimeout(timeout);
+          if (!resp.ok) throw new Error(`Failed to fetch ICS: ${resp.status} ${resp.statusText}`);
+          const txt = await resp.text();
+          return txt;
+        } catch (err) {
+          // If aborted or network error, retry with backoff
+          const isAbort = (err as any)?.name === 'AbortError' || (err as any)?.code === 'ECONNRESET';
+          console.warn(`ICS fetch attempt ${attempt} failed:`, err?.message || err);
+          if (attempt >= maxRetries) throw err;
+          await new Promise(res => setTimeout(res, backoff(attempt)));
+        }
+      }
+      throw new Error('Exceeded fetch retries');
+    };
+
+    try {
+      // First try: fetch text with retries, then parse locally
+      const txt = await tryFetchTextWithRetries(calendarUrl);
+      // Prefer parse functions if available
+      // @ts-ignore
+      if (typeof ical.parseICS === 'function') {
+        // @ts-ignore
+        eventsObj = ical.parseICS(txt) as Record<string, any>;
+      } else if (typeof (ical as any).parse === 'function') {
+        // @ts-ignore
+        eventsObj = (ical as any).parse(txt) as Record<string, any>;
+      } else {
+        // As a last resort, try node-ical.fromURL (which uses axios internally)
+        console.warn('node-ical parse API not present; falling back to library fromURL');
+        eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+      }
+    } catch (innerErr) {
+      console.warn('Primary ICS fetch/parse path failed, falling back to axios manual fetch:', innerErr);
+      // Try to fetch via axios directly (give it generous limits) and parse the text
+      try {
+        // lazy-require axios to avoid adding it to runtime if not present
+        // but axios is already a dependency of node-ical; require it here.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const axios = require('axios');
+        const resp = await axios.get(calendarUrl, {
+          responseType: 'text',
+          timeout: fetchTimeoutMs,
+          maxContentLength: Infinity,
+          maxBodyLength: Infinity,
+          headers: {
+            'User-Agent': 'classroom-reservation-fetch/1.0 (+https://example)' // friendly UA
+          }
+        });
+        const txt = resp.data as string;
         // @ts-ignore
         if (typeof ical.parseICS === 'function') {
           // @ts-ignore
           eventsObj = ical.parseICS(txt) as Record<string, any>;
         } else if (typeof (ical as any).parse === 'function') {
-          // older/newer variants
           // @ts-ignore
           eventsObj = (ical as any).parse(txt) as Record<string, any>;
         } else {
-          // fallback to library fetch if parsing API not available
+          // as a last, last resort, call fromURL
           eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
         }
-      } else {
-        // no global fetch available — use node-ical's built-in fromURL
-        eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+      } catch (axiosErr) {
+        console.error('Fallback axios fetch/parse also failed:', axiosErr);
+        throw axiosErr;
       }
-    } catch (innerErr) {
-      console.warn('Primary ICS fetch/parse path failed, falling back to node-ical.fromURL:', innerErr);
-      // final fallback
-      eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
     }
 
     const formatted = formatEvents(eventsObj as Record<string, any>);

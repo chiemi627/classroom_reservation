@@ -68,7 +68,11 @@ export default async function handler(
 
       // 強制更新は非同期でトリガ（ワークフローがタイムアウトするのを防ぐため、即時に 202 を返す）
       // 実行中の結果はログに記録される
-      calendarStore.fetchAndStore(calendarUrl)
+      // Allow callers to pass optional fetch overrides via query params (only for refresh).
+      const rqTimeout = req.query.fetchTimeoutMs ? Number(req.query.fetchTimeoutMs) : undefined;
+      const rqRetries = req.query.fetchRetries ? Number(req.query.fetchRetries) : undefined;
+
+      calendarStore.fetchAndStore(calendarUrl, { timeoutMs: rqTimeout, retries: rqRetries })
         .then(r => {
           if (!r.ok) console.error('Forced refresh failed:', r.error);
           else console.log(`Forced refresh completed, ${r.count} events`);
@@ -84,8 +88,8 @@ export default async function handler(
     // もしキャッシュが空なら、短時間だけ同期的にフェッチを試みる（Vercel の一時ファイルや初回起動で空になるため）
     if ((!formatedevents || formatedevents.length === 0)) {
       try {
-        const timeoutMs = 10_000; // 10秒で打ち切る
-        const fetchPromise = calendarStore.fetchAndStore(calendarUrl);
+  const timeoutMs = 10_000; // 10秒で打ち切る
+  const fetchPromise = calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries: 1 });
         const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ ok: false, error: 'timeout' }), timeoutMs));
         // @ts-ignore
         const r = await Promise.race([fetchPromise, timeoutPromise]);
