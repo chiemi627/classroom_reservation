@@ -81,6 +81,24 @@ export default async function handler(
     // まずはストアからイベントを取得
     let formatedevents = calendarStore.getEvents();
 
+    // もしキャッシュが空なら、短時間だけ同期的にフェッチを試みる（Vercel の一時ファイルや初回起動で空になるため）
+    if ((!formatedevents || formatedevents.length === 0)) {
+      try {
+        const timeoutMs = 10_000; // 10秒で打ち切る
+        const fetchPromise = calendarStore.fetchAndStore(calendarUrl);
+        const timeoutPromise = new Promise(resolve => setTimeout(() => resolve({ ok: false, error: 'timeout' }), timeoutMs));
+        // @ts-ignore
+        const r = await Promise.race([fetchPromise, timeoutPromise]);
+        if (r && (r as any).ok) {
+          formatedevents = calendarStore.getEvents();
+        } else {
+          console.warn('Synchronous fetchAndStore did not complete or failed:', r);
+        }
+      } catch (e) {
+        console.error('Synchronous fetchAndStore threw:', e);
+      }
+    }
+
     // クエリから start / end（ISO 文字列）を受け取り、範囲でフィルタする
     const { start: startQuery, end: endQuery } = req.query;
 
