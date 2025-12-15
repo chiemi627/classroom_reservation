@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import os from 'os';
 import ical from 'node-ical';
 
 type CalendarEvent = {
@@ -20,7 +21,14 @@ type CalendarEvent = {
   description?: string;
 };
 
-const storageFile = path.join(process.cwd(), 'cache', 'public-calendar.json');
+// Use a writable directory by default (prefer user-specified env var).
+// In serverless environments (Vercel) the project dir (e.g. /var/task) is
+// read-only — use OS tmpdir instead. Consumers may override with
+// `CALENDAR_CACHE_PATH` env var to point to a persistent store on self-hosts.
+function getStorageFile() {
+  const base = process.env.CALENDAR_CACHE_PATH || path.join(os.tmpdir(), 'classroom_reservation');
+  return path.join(base, 'public-calendar.json');
+}
 
 let cachedEvents: CalendarEvent[] = [];
 let lastFetched: number | null = null;
@@ -52,6 +60,7 @@ const formatEvents = (events: Record<string, any>) => {
 
 async function loadFromDisk() {
   try {
+    const storageFile = getStorageFile();
     const txt = await fs.readFile(storageFile, 'utf-8');
     const parsed = JSON.parse(txt);
     if (Array.isArray(parsed.events)) {
@@ -65,10 +74,22 @@ async function loadFromDisk() {
 
 async function saveToDisk() {
   try {
-    await fs.mkdir(path.dirname(storageFile), { recursive: true });
+    const storageFile = getStorageFile();
+    const dir = path.dirname(storageFile);
+    // Attempt to create directory in a writable location. On platforms
+    // like Vercel the default project dir is read-only, so prefer tmpdir.
+    await fs.mkdir(dir, { recursive: true });
     await fs.writeFile(storageFile, JSON.stringify({ fetchedAt: lastFetched, events: cachedEvents }, null, 2), 'utf-8');
   } catch (e) {
+    // Don't throw — caching failure shouldn't break the app. Provide a
+    // helpful log message explaining the likely cause and a mitigation.
     console.error('Failed to write calendar cache to disk:', e);
+    if ((e as any)?.code === 'EACCES' || (e as any)?.code === 'ENOENT') {
+      console.error('Cache write failed — target path may be read-only.\n' +
+        'If running on Vercel or other serverless platforms, set CALENDAR_CACHE_PATH\n' +
+        "to a writable path (like process.env.TMPDIR or '/tmp') or use an external store (S3/Redis/Vercel KV).\n"
+      );
+    }
   }
 }
 
