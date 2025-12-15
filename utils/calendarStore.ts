@@ -74,7 +74,46 @@ async function saveToDisk() {
 
 export async function fetchAndStore(calendarUrl: string) {
   try {
-    const eventsObj = await ical.async.fromURL(calendarUrl);
+    // Some environments (Vercel) may fail when node-ical's internal fetch (axios)
+    // encounters very large responses. Work around by fetching the ICS text
+    // ourselves using the global fetch (or falling back) and then parsing it
+    // with node-ical's parser to avoid axios maxContentLength issues.
+    let eventsObj: Record<string, any> | null = null;
+
+    try {
+      if (typeof fetch === 'function') {
+        const controller = new AbortController();
+        const timeoutMs = 30_000; // 30s
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        const resp = await fetch(calendarUrl, { signal: controller.signal });
+        clearTimeout(timeout);
+
+        if (!resp.ok) throw new Error(`Failed to fetch ICS: ${resp.status} ${resp.statusText}`);
+        const txt = await resp.text();
+        // node-ical exposes a parseICS-like function; use it if available.
+        // `ical.parseICS` exists in many versions; guard access to avoid TS error.
+        // @ts-ignore
+        if (typeof ical.parseICS === 'function') {
+          // @ts-ignore
+          eventsObj = ical.parseICS(txt) as Record<string, any>;
+        } else if (typeof (ical as any).parse === 'function') {
+          // older/newer variants
+          // @ts-ignore
+          eventsObj = (ical as any).parse(txt) as Record<string, any>;
+        } else {
+          // fallback to library fetch if parsing API not available
+          eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+        }
+      } else {
+        // no global fetch available — use node-ical's built-in fromURL
+        eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+      }
+    } catch (innerErr) {
+      console.warn('Primary ICS fetch/parse path failed, falling back to node-ical.fromURL:', innerErr);
+      // final fallback
+      eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+    }
+
     const formatted = formatEvents(eventsObj as Record<string, any>);
     cachedEvents = formatted;
     lastFetched = Date.now();
