@@ -79,7 +79,10 @@ async function saveToDisk() {
     // Attempt to create directory in a writable location. On platforms
     // like Vercel the default project dir is read-only, so prefer tmpdir.
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(storageFile, JSON.stringify({ fetchedAt: lastFetched, events: cachedEvents }, null, 2), 'utf-8');
+    // Write atomically: write to a temp file then rename.
+    const tmpPath = `${storageFile}.tmp-${Date.now()}`;
+    await fs.writeFile(tmpPath, JSON.stringify({ fetchedAt: lastFetched, events: cachedEvents }, null, 2), 'utf-8');
+    await fs.rename(tmpPath, storageFile);
   } catch (e) {
     // Don't throw — caching failure shouldn't break the app. Provide a
     // helpful log message explaining the likely cause and a mitigation.
@@ -90,6 +93,20 @@ async function saveToDisk() {
         "to a writable path (like process.env.TMPDIR or '/tmp') or use an external store (S3/Redis/Vercel KV).\n"
       );
     }
+  }
+}
+
+async function backupExistingStorage() {
+  try {
+    const storageFile = getStorageFile();
+    // if no file, nothing to backup
+    await fs.stat(storageFile);
+    const bakPath = `${storageFile}.bak`;
+    // copy (overwrite) backup
+    await fs.copyFile(storageFile, bakPath);
+    console.log('Backed up existing calendar cache to', bakPath);
+  } catch (e) {
+    // ignore if file doesn't exist or stat fails
   }
 }
 
@@ -182,6 +199,31 @@ export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: nu
     }
 
     const formatted = formatEvents(eventsObj as Record<string, any>);
+
+    // If the fetched result is empty but we already have cached events,
+    // prefer keeping the previous cache rather than overwriting it with
+    // an empty set (which may occur on transient network/parse errors).
+    if ((!formatted || formatted.length === 0) && cachedEvents && cachedEvents.length > 0) {
+      console.warn('Fetched calendar was empty; keeping existing cached events');
+      // Ensure an on-disk backup exists (in case previous cache was only in-memory)
+      try {
+        await backupExistingStorage();
+        // Persist current in-memory cache to disk to ensure durability
+        await saveToDisk();
+      } catch (e) {
+        console.error('Failed to ensure disk backup/persist of previous cache:', e);
+      }
+      return { ok: true, count: cachedEvents.length, keptPrevious: true };
+    }
+
+    // Normal path: we have parsed events to replace cache.
+    // Back up any existing on-disk cache before overwriting.
+    try {
+      await backupExistingStorage();
+    } catch (e) {
+      // non-fatal
+    }
+
     cachedEvents = formatted;
     lastFetched = Date.now();
     await saveToDisk();
