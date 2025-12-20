@@ -3,48 +3,9 @@ import path from 'path';
 import os from 'os';
 import ical from 'node-ical';
 
-// --- Vercel KV support (dynamic, optional) ---
-let kvClient: any = null;
-const useVercelKV = Boolean(process.env.USE_VERCEL_KV || process.env.VERCEL_KV);
-
-async function ensureKV() {
-  if (kvClient || !useVercelKV) return;
-  try {
-    // dynamic import so local dev / CI without the package doesn't crash
-    // the code will gracefully fallback to disk when KV is unavailable.
-    // @ts-ignore
-    const mod = await import('@vercel/kv');
-    // module may export { kv } or default; try common shapes
-    // @ts-ignore
-    kvClient = mod.kv ?? mod.default?.kv ?? mod.default ?? null;
-  } catch (e) {
-    console.warn('Vercel KV not available:', (e as any)?.message || e);
-    kvClient = null;
-  }
-}
-
-async function kvGet(key: string) {
-  await ensureKV();
-  if (!kvClient) return null;
-  try {
-    return await kvClient.get(key);
-  } catch (e) {
-    console.warn('kv.get failed:', (e as any)?.message || e);
-    return null;
-  }
-}
-
-async function kvSet(key: string, value: string) {
-  await ensureKV();
-  if (!kvClient) return;
-  try {
-    await kvClient.set(key, value);
-  } catch (e) {
-    console.warn('kv.set failed:', (e as any)?.message || e);
-  }
-}
-
-// --- end Vercel KV support ---
+// Vercel KV removed — fallback to Neon/Redis or disk is used instead.
+// If you later want optional KV support, reintroduce dynamic import with
+// eval('require') or ensure @vercel/kv is added to package.json.
 
 // --- Neon / Postgres support (dynamic, optional) ---
 let pgClient: any = null;
