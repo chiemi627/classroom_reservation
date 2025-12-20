@@ -3,6 +3,49 @@ import path from 'path';
 import os from 'os';
 import ical from 'node-ical';
 
+// --- Vercel KV support (dynamic, optional) ---
+let kvClient: any = null;
+const useVercelKV = Boolean(process.env.USE_VERCEL_KV || process.env.VERCEL_KV);
+
+async function ensureKV() {
+  if (kvClient || !useVercelKV) return;
+  try {
+    // dynamic import so local dev / CI without the package doesn't crash
+    // the code will gracefully fallback to disk when KV is unavailable.
+    // @ts-ignore
+    const mod = await import('@vercel/kv');
+    // module may export { kv } or default; try common shapes
+    // @ts-ignore
+    kvClient = mod.kv ?? mod.default?.kv ?? mod.default ?? null;
+  } catch (e) {
+    console.warn('Vercel KV not available:', (e as any)?.message || e);
+    kvClient = null;
+  }
+}
+
+async function kvGet(key: string) {
+  await ensureKV();
+  if (!kvClient) return null;
+  try {
+    return await kvClient.get(key);
+  } catch (e) {
+    console.warn('kv.get failed:', (e as any)?.message || e);
+    return null;
+  }
+}
+
+async function kvSet(key: string, value: string) {
+  await ensureKV();
+  if (!kvClient) return;
+  try {
+    await kvClient.set(key, value);
+  } catch (e) {
+    console.warn('kv.set failed:', (e as any)?.message || e);
+  }
+}
+
+// --- end Vercel KV support ---
+
 type CalendarEvent = {
   id: string;
   subject: string;
@@ -60,6 +103,24 @@ const formatEvents = (events: Record<string, any>) => {
 
 async function loadFromDisk() {
   try {
+    // Try Vercel KV first (shared across instances) when enabled
+    if (useVercelKV) {
+      try {
+        const raw = await kvGet('public-calendar');
+        if (raw) {
+          const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (Array.isArray(parsed.events)) {
+            cachedEvents = parsed.events;
+            lastFetched = parsed.fetchedAt || Date.now();
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to load cache from Vercel KV, falling back to disk:', (e as any)?.message || e);
+      }
+    }
+
+    // Fallback: read from local disk (tmpdir or CALENDAR_CACHE_PATH)
     const storageFile = getStorageFile();
     const txt = await fs.readFile(storageFile, 'utf-8');
     const parsed = JSON.parse(txt);
@@ -76,12 +137,23 @@ async function saveToDisk() {
   try {
     const storageFile = getStorageFile();
     const dir = path.dirname(storageFile);
-    // Attempt to create directory in a writable location. On platforms
-    // like Vercel the default project dir is read-only, so prefer tmpdir.
+    const payloadObj = { fetchedAt: lastFetched, events: cachedEvents };
+    const payload = JSON.stringify(payloadObj, null, 2);
+
+    // Try to persist to Vercel KV when available (shared across instances)
+    if (useVercelKV) {
+      try {
+        await kvSet('public-calendar', payload);
+      } catch (e) {
+        console.warn('Failed to save cache to Vercel KV, will attempt disk write:', (e as any)?.message || e);
+      }
+    }
+
+    // Always also try to persist to disk when writable (useful for local/CI)
     await fs.mkdir(dir, { recursive: true });
     // Write atomically: write to a temp file then rename.
     const tmpPath = `${storageFile}.tmp-${Date.now()}`;
-    await fs.writeFile(tmpPath, JSON.stringify({ fetchedAt: lastFetched, events: cachedEvents }, null, 2), 'utf-8');
+    await fs.writeFile(tmpPath, payload, 'utf-8');
     await fs.rename(tmpPath, storageFile);
   } catch (e) {
     // Don't throw — caching failure shouldn't break the app. Provide a

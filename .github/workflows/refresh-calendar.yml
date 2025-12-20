@@ -31,5 +31,9 @@ jobs:
           fi
           # Remove trailing slash if present
           base_url="${base_url%/}"
-          echo "Calling ${base_url}/api/public-calendar?refresh=1"
-          curl -fS --retry 3 "${base_url}/api/public-calendar?refresh=1&token=${TOKEN}&fetchTimeoutMs=120000&fetchRetries=5"
+          echo "Calling ${base_url}/api/public-calendar?refresh=1 (token will be sent in header)"
+          # Send token in header, show headers+body (-i -v), set client timeout and retries.
+          # Do not fail the workflow on non-2xx so we can inspect logs; remove '|| true' to make it strict.
+          curl -i -v --retry 3 --retry-delay 5 --retry-connrefused --max-time 120 \
+            -H "x-refresh-token: ${TOKEN}" \
+            "${base_url}/api/public-calendar?refresh=1&fetchTimeoutMs=120000&fetchRetries=5" || true
