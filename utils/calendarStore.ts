@@ -218,10 +218,11 @@ async function backupExistingStorage() {
   try {
     const storageFile = getStorageFile();
     // if no file, nothing to backup
-    await fs.stat(storageFile);
+    // use fs.promises for async/await-compatible API
+    await fs.promises.stat(storageFile);
     const bakPath = `${storageFile}.bak`;
-    // copy (overwrite) backup
-    await fs.copyFile(storageFile, bakPath);
+    // copy (overwrite) backup using promises API
+    await fs.promises.copyFile(storageFile, bakPath);
     console.log('Backed up existing calendar cache to', bakPath);
   } catch (e) {
     // ignore if file doesn't exist or stat fails
