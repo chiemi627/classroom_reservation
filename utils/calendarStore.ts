@@ -225,46 +225,26 @@ async function backupExistingStorage() {
   }
 }
 
-export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: number; retries?: number }) {
+async function fetchTextWithTimeout(url: string, timeoutMs: number, headers = {}) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Some environments (Vercel) may fail when node-ical's internal fetch (axios)
-    // encounters very large responses. Work around by fetching the ICS text
-    // ourselves using the global fetch (or falling back) and then parsing it
-    // with node-ical's parser to avoid axios maxContentLength issues.
-    let eventsObj: Record<string, any> | null = null;
+    console.log(`[calendarStore] fetching ${url} timeout=${timeoutMs}`);
+    const res = await fetch(url, { headers, signal: controller.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    return text;
+  } finally {
+    clearTimeout(id);
+  }
+}
 
-  // Configuration via env, overridable per-call via opts
-  const fetchTimeoutMs = Number(opts?.timeoutMs ?? process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 60000); // 60s default
-  const maxRetries = Number(opts?.retries ?? process.env.CALENDAR_FETCH_RETRIES ?? 3);
-
-    const tryFetchTextWithRetries = async (url: string) => {
-      let attempt = 0;
-      const backoff = (n: number) => 200 * Math.pow(2, n); // 200ms, 400ms, 800ms...
-      while (attempt < maxRetries) {
-        attempt += 1;
-        try {
-          if (typeof fetch !== 'function') throw new Error('global fetch not available');
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
-          const resp = await fetch(url, { signal: controller.signal });
-          clearTimeout(timeout);
-          if (!resp.ok) throw new Error(`Failed to fetch ICS: ${resp.status} ${resp.statusText}`);
-          const txt = await resp.text();
-          return txt;
-        } catch (err) {
-          // If aborted or network error, retry with backoff
-          const isAbort = (err as any)?.name === 'AbortError' || (err as any)?.code === 'ECONNRESET';
-          console.warn(`ICS fetch attempt ${attempt} failed:`, err?.message || err);
-          if (attempt >= maxRetries) throw err;
-          await new Promise(res => setTimeout(res, backoff(attempt)));
-        }
-      }
-      throw new Error('Exceeded fetch retries');
-    };
-
+export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: number; retries?: number }) {
+  const timeoutMs = opts?.timeoutMs ?? Number(process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 120000);
+  const retries = opts?.retries ?? Number(process.env.CALENDAR_FETCH_RETRIES ?? 3);
+  for (let i = 1; i <= retries; i++) {
     try {
-      // First try: fetch text with retries, then parse locally
-      const txt = await tryFetchTextWithRetries(calendarUrl);
+      const txt = await fetchTextWithTimeout(calendarUrl, timeoutMs);
       // Prefer parse functions if available
       // @ts-ignore
       if (typeof ical.parseICS === 'function') {
@@ -278,74 +258,43 @@ export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: nu
         console.warn('node-ical parse API not present; falling back to library fromURL');
         eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
       }
-    } catch (innerErr) {
-      console.warn('Primary ICS fetch/parse path failed, falling back to axios manual fetch:', innerErr);
-      // Try to fetch via axios directly (give it generous limits) and parse the text
-      try {
-        // lazy-require axios to avoid adding it to runtime if not present
-        // but axios is already a dependency of node-ical; require it here.
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const axios = require('axios');
-        const resp = await axios.get(calendarUrl, {
-          responseType: 'text',
-          timeout: fetchTimeoutMs,
-          maxContentLength: Infinity,
-          maxBodyLength: Infinity,
-          headers: {
-            'User-Agent': 'classroom-reservation-fetch/1.0 (+https://example)' // friendly UA
-          }
-        });
-        const txt = resp.data as string;
-        // @ts-ignore
-        if (typeof ical.parseICS === 'function') {
-          // @ts-ignore
-          eventsObj = ical.parseICS(txt) as Record<string, any>;
-        } else if (typeof (ical as any).parse === 'function') {
-          // @ts-ignore
-          eventsObj = (ical as any).parse(txt) as Record<string, any>;
-        } else {
-          // as a last, last resort, call fromURL
-          eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+
+      const formatted = formatEvents(eventsObj as Record<string, any>);
+
+      // If the fetched result is empty but we already have cached events,
+      // prefer keeping the previous cache rather than overwriting it with
+      // an empty set (which may occur on transient network/parse errors).
+      if ((!formatted || formatted.length === 0) && cachedEvents && cachedEvents.length > 0) {
+        console.warn('Fetched calendar was empty; keeping existing cached events');
+        // Ensure an on-disk backup exists (in case previous cache was only in-memory)
+        try {
+          await backupExistingStorage();
+          // Persist current in-memory cache to disk to ensure durability
+          await saveToDisk();
+        } catch (e) {
+          console.error('Failed to ensure disk backup/persist of previous cache:', e);
         }
-      } catch (axiosErr) {
-        console.error('Fallback axios fetch/parse also failed:', axiosErr);
-        throw axiosErr;
+        return { ok: true, count: cachedEvents.length, keptPrevious: true };
       }
-    }
 
-    const formatted = formatEvents(eventsObj as Record<string, any>);
-
-    // If the fetched result is empty but we already have cached events,
-    // prefer keeping the previous cache rather than overwriting it with
-    // an empty set (which may occur on transient network/parse errors).
-    if ((!formatted || formatted.length === 0) && cachedEvents && cachedEvents.length > 0) {
-      console.warn('Fetched calendar was empty; keeping existing cached events');
-      // Ensure an on-disk backup exists (in case previous cache was only in-memory)
+      // Normal path: we have parsed events to replace cache.
+      // Back up any existing on-disk cache before overwriting.
       try {
         await backupExistingStorage();
-        // Persist current in-memory cache to disk to ensure durability
-        await saveToDisk();
       } catch (e) {
-        console.error('Failed to ensure disk backup/persist of previous cache:', e);
+        // non-fatal
       }
-      return { ok: true, count: cachedEvents.length, keptPrevious: true };
-    }
 
-    // Normal path: we have parsed events to replace cache.
-    // Back up any existing on-disk cache before overwriting.
-    try {
-      await backupExistingStorage();
-    } catch (e) {
-      // non-fatal
+      cachedEvents = formatted;
+      lastFetched = Date.now();
+      await saveToDisk();
+      console.log(`[calendarStore] fetchAndStore success attempt=${i}`);
+      return { ok: true, count: cachedEvents.length };
+    } catch (err: any) {
+      console.warn(`[calendarStore] ICS fetch attempt ${i} failed:`, err?.message || err);
+      if (i === retries) return { ok: false, error: err?.message || String(err) };
+      await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i))); // exponential backoff
     }
-
-    cachedEvents = formatted;
-    lastFetched = Date.now();
-    await saveToDisk();
-    return { ok: true, count: cachedEvents.length };
-  } catch (err) {
-    console.error('fetchAndStore error:', err);
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

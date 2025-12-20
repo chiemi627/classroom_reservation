@@ -44,43 +44,25 @@ export default async function handler(
       return res.status(400).json({ error: "カレンダーURLが設定されていません" });
     }
 
-    // ストアを初期化（初回はディスクから読み込むか、fetchをトリガー）
+    // ストア初期化（同期 fetch を非同期に変更）
     await calendarStore.initStore(calendarUrl);
 
-    // 即時更新トリガ（管理用）：?refresh=1 を付けると外部ICSをフェッチしてキャッシュを更新する
-    // セキュリティ: 環境変数 `CALENDAR_REFRESH_TOKEN` が設定されている場合は
-    // ?token=... または ヘッダ x-refresh-token: ... による認証を必須とする
-    const { refresh } = req.query;
-    if (refresh && String(refresh) !== '0' && String(refresh).toLowerCase() !== 'false') {
-      const configuredToken = process.env.CALENDAR_REFRESH_TOKEN;
-      const tokenFromQuery = Array.isArray(req.query.token) ? req.query.token[0] : req.query.token;
-      const tokenFromHeader = req.headers['x-refresh-token'] || req.headers['x-refresh-token'.toLowerCase()];
-      const suppliedToken = tokenFromQuery || tokenFromHeader;
-
-      if (configuredToken) {
-        if (!suppliedToken || String(suppliedToken) !== String(configuredToken)) {
-          return res.status(401).json({ error: '刷新トークンが無効です' });
+    // キャッシュが空ならバックグラウンドで更新トリガだけ行う（ブロッキング禁止）
+    const events = calendarStore.getEvents();
+    if ((!events || events.length === 0)) {
+      // 非同期で更新を起動するが await はしない
+      (async () => {
+        try {
+          const timeoutMs = Number(process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 120000); // デフォルト120秒
+          const retries = Number(process.env.CALENDAR_FETCH_RETRIES ?? 3);
+          await calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries });
+          console.log('[public-calendar] background fetchAndStore finished');
+        } catch (e) {
+          console.warn('[public-calendar] background fetchAndStore failed', e);
         }
-      } else {
-        // 環境変数が未設定の場合は警告をログに出すが、互換性のため許可する
-        console.warn('CALENDAR_REFRESH_TOKEN is not set; refresh endpoint is unprotected');
-      }
-
-      // 強制更新は非同期でトリガ（ワークフローがタイムアウトするのを防ぐため、即時に 202 を返す）
-      // 実行中の結果はログに記録される
-      // Allow callers to pass optional fetch overrides via query params (only for refresh).
-      const rqTimeout = req.query.fetchTimeoutMs ? Number(req.query.fetchTimeoutMs) : undefined;
-      const rqRetries = req.query.fetchRetries ? Number(req.query.fetchRetries) : undefined;
-
-      calendarStore.fetchAndStore(calendarUrl, { timeoutMs: rqTimeout, retries: rqRetries })
-        .then(r => {
-          if (!r.ok) console.error('Forced refresh failed:', r.error);
-          else console.log(`Forced refresh completed, ${r.count} events`);
-        })
-        .catch(err => console.error('Forced refresh exception:', err));
-
-      return res.status(202).json({ ok: true, message: 'Refresh started' });
+      })();
     }
+    // ここで即座に現在のキャッシュ（空でも）を返す
 
     // まずはストアからイベントを取得
     let formatedevents = calendarStore.getEvents();
