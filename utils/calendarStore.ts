@@ -48,7 +48,8 @@ async function kvSet(key: string, value: string) {
 
 // --- Neon / Postgres support (dynamic, optional) ---
 let pgClient: any = null;
-const useNeon = Boolean(process.env.USE_NEON);
+// enable Neon/Postgres when explicit flag or a connection string is present
+const useNeon = Boolean(process.env.USE_NEON || process.env.NEON_DATABASE_URL || process.env.DATABASE_URL);
 
 async function ensureNeon() {
   if (pgClient || !useNeon) return;
@@ -56,7 +57,9 @@ async function ensureNeon() {
     // dynamic import so local dev without pg doesn't crash
     // @ts-ignore
     const { Client } = await import('pg');
-    const client = new Client({ connectionString: process.env.NEON_DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    const conn = process.env.NEON_DATABASE_URL ?? process.env.DATABASE_URL;
+    if (!conn) throw new Error('Neon connection string not found (NEON_DATABASE_URL or DATABASE_URL)');
+    const client = new Client({ connectionString: conn, ssl: { rejectUnauthorized: false } });
     await client.connect();
     pgClient = client;
     // ensure table exists (idempotent)
