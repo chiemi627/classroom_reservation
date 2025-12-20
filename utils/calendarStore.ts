@@ -249,6 +249,8 @@ export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: nu
   for (let i = 1; i <= retries; i++) {
     try {
       const txt = await fetchTextWithTimeout(calendarUrl, timeoutMs);
+      // declare eventsObj used by multiple parse branches
+      let eventsObj: Record<string, any> = {};
       // Prefer parse functions if available
       // @ts-ignore
       if (typeof ical.parseICS === 'function') {
@@ -260,7 +262,9 @@ export async function fetchAndStore(calendarUrl: string, opts?: { timeoutMs?: nu
       } else {
         // As a last resort, try node-ical.fromURL (which uses axios internally)
         console.warn('node-ical parse API not present; falling back to library fromURL');
-        eventsObj = await ical.async.fromURL(calendarUrl) as Record<string, any>;
+        // some node-ical exports async.fromURL — guard access with optional chaining
+        // @ts-ignore
+        eventsObj = (ical.async?.fromURL ? await ical.async.fromURL(calendarUrl) : {}) as Record<string, any>;
       }
 
       const formatted = formatEvents(eventsObj as Record<string, any>);
