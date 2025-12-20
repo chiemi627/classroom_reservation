@@ -1,4 +1,4 @@
-import fs from 'fs/promises';
+import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import ical from 'node-ical';
@@ -45,6 +45,64 @@ async function kvSet(key: string, value: string) {
 }
 
 // --- end Vercel KV support ---
+
+// --- Neon / Postgres support (dynamic, optional) ---
+let pgClient: any = null;
+const useNeon = Boolean(process.env.USE_NEON);
+
+async function ensureNeon() {
+  if (pgClient || !useNeon) return;
+  try {
+    // dynamic import so local dev without pg doesn't crash
+    // @ts-ignore
+    const { Client } = await import('pg');
+    const client = new Client({ connectionString: process.env.NEON_DATABASE_URL, ssl: { rejectUnauthorized: false } });
+    await client.connect();
+    pgClient = client;
+    // ensure table exists (idempotent)
+    await pgClient.query(`
+      CREATE TABLE IF NOT EXISTS kv_store (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      )
+    `);
+    console.log('[calendarStore] Neon (Postgres) initialized');
+  } catch (e) {
+    console.warn('[calendarStore] Neon not available:', e?.message || e);
+    pgClient = null;
+  }
+}
+
+async function pgGet(key: string) {
+  await ensureNeon();
+  if (!pgClient) return null;
+  try {
+    const r = await pgClient.query('SELECT value FROM kv_store WHERE key = $1', [key]);
+    if (r.rows.length === 0) return null;
+    console.log('[calendarStore] pgGet HIT', key);
+    return r.rows[0].value;
+  } catch (e) {
+    console.warn('[calendarStore] pgGet failed:', e?.message || e);
+    return null;
+  }
+}
+
+async function pgSet(key: string, value: string) {
+  await ensureNeon();
+  if (!pgClient) return;
+  try {
+    await pgClient.query(
+      `INSERT INTO kv_store(key, value) VALUES($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [key, JSON.parse(value)]
+    );
+    console.log('[calendarStore] pgSet success', key);
+  } catch (e) {
+    console.warn('[calendarStore] pgSet failed:', e?.message || e);
+  }
+}
+// --- end Neon support ---
 
 type CalendarEvent = {
   id: string;
@@ -103,68 +161,53 @@ const formatEvents = (events: Record<string, any>) => {
 
 async function loadFromDisk() {
   try {
-    // Try Vercel KV first (shared across instances) when enabled
-    if (useVercelKV) {
-      try {
-        const raw = await kvGet('public-calendar');
-        if (raw) {
+    // Try Neon first
+    if (useNeon) {
+      const raw = await pgGet('public-calendar');
+      if (raw) {
+        try {
           const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-          if (Array.isArray(parsed.events)) {
-            cachedEvents = parsed.events;
-            lastFetched = parsed.fetchedAt || Date.now();
-            return;
-          }
+          cachedEvents = parsed.events || [];
+          lastFetched = parsed.lastFetched ?? Date.now();
+          return;
+        } catch (e) {
+          console.warn('Failed to parse Neon cache, falling back to disk:', e);
         }
-      } catch (e) {
-        console.warn('Failed to load cache from Vercel KV, falling back to disk:', (e as any)?.message || e);
       }
     }
 
-    // Fallback: read from local disk (tmpdir or CALENDAR_CACHE_PATH)
-    const storageFile = getStorageFile();
-    const txt = await fs.readFile(storageFile, 'utf-8');
-    const parsed = JSON.parse(txt);
-    if (Array.isArray(parsed.events)) {
-      cachedEvents = parsed.events;
-      lastFetched = parsed.fetchedAt || Date.now();
+    // Fallback to disk
+    const file = getStorageFile();
+    if (fs.existsSync(file)) {
+      const content = fs.readFileSync(file, 'utf8');
+      const parsed = JSON.parse(content);
+      cachedEvents = parsed.events || [];
+      lastFetched = parsed.lastFetched ?? Date.now();
     }
   } catch (e) {
-    // ignore if file doesn't exist or parse error
+    console.warn('loadFromDisk error:', e);
   }
 }
 
 async function saveToDisk() {
   try {
-    const storageFile = getStorageFile();
-    const dir = path.dirname(storageFile);
-    const payloadObj = { fetchedAt: lastFetched, events: cachedEvents };
-    const payload = JSON.stringify(payloadObj, null, 2);
-
-    // Try to persist to Vercel KV when available (shared across instances)
-    if (useVercelKV) {
+    const payload = JSON.stringify({ events: cachedEvents, lastFetched });
+    // Try Neon first
+    if (useNeon) {
       try {
-        await kvSet('public-calendar', payload);
+        await pgSet('public-calendar', payload);
       } catch (e) {
-        console.warn('Failed to save cache to Vercel KV, will attempt disk write:', (e as any)?.message || e);
+        console.warn('Failed to save to Neon, will try disk:', e);
       }
     }
 
-    // Always also try to persist to disk when writable (useful for local/CI)
-    await fs.mkdir(dir, { recursive: true });
-    // Write atomically: write to a temp file then rename.
-    const tmpPath = `${storageFile}.tmp-${Date.now()}`;
-    await fs.writeFile(tmpPath, payload, 'utf-8');
-    await fs.rename(tmpPath, storageFile);
+    // Always also try to persist to disk (useful for local/CI)
+    const file = getStorageFile();
+    await fs.promises.mkdir(path.dirname(file), { recursive: true });
+    await fs.promises.writeFile(file, payload, 'utf8');
+    console.log('[calendarStore] saved to disk:', file);
   } catch (e) {
-    // Don't throw — caching failure shouldn't break the app. Provide a
-    // helpful log message explaining the likely cause and a mitigation.
-    console.error('Failed to write calendar cache to disk:', e);
-    if ((e as any)?.code === 'EACCES' || (e as any)?.code === 'ENOENT') {
-      console.error('Cache write failed — target path may be read-only.\n' +
-        'If running on Vercel or other serverless platforms, set CALENDAR_CACHE_PATH\n' +
-        "to a writable path (like process.env.TMPDIR or '/tmp') or use an external store (S3/Redis/Vercel KV).\n"
-      );
-    }
+    console.warn('saveToDisk error:', e);
   }
 }
 
