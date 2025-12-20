@@ -2,8 +2,8 @@ name: Refresh public calendar
 
 on:
   schedule:
-    # every day at midnight
-    - cron:  '0 0 * * *'
+    # every 10 minutes
+    - cron:  '*/10 * * * *'
   workflow_dispatch: {}
 
 jobs:
