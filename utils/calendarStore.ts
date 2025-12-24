@@ -24,12 +24,17 @@ async function ensureNeon() {
     await client.connect();
     pgClient = client;
     // ensure table exists (idempotent)
+    // create a history table to store versions of the cache (one row per update)
     await pgClient.query(`
-      CREATE TABLE IF NOT EXISTS kv_store (
-        key TEXT PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS kv_store_history (
+        id BIGSERIAL PRIMARY KEY,
+        key TEXT NOT NULL,
         value JSONB NOT NULL,
-        updated_at TIMESTAMPTZ DEFAULT now()
-      )
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    await pgClient.query(`
+      CREATE INDEX IF NOT EXISTS idx_kv_store_history_key_created_at ON kv_store_history(key, created_at DESC);
     `);
     console.log('[calendarStore] Neon (Postgres) initialized');
   } catch (e) {
@@ -42,12 +47,16 @@ async function pgGet(key: string) {
   await ensureNeon();
   if (!pgClient) return null;
   try {
-    const r = await pgClient.query('SELECT value FROM kv_store WHERE key = $1', [key]);
+    // fetch latest inserted history row for the key
+    const r = await pgClient.query(
+      'SELECT value FROM kv_store_history WHERE key = $1 ORDER BY created_at DESC LIMIT 1',
+      [key]
+    );
     if (r.rows.length === 0) return null;
-    console.log('[calendarStore] pgGet HIT', key);
+    console.log('[calendarStore] pgGet HIT (history)', key);
     return r.rows[0].value;
   } catch (e) {
-    console.warn('[calendarStore] pgGet failed:', e?.message || e);
+    console.error('[calendarStore] pgGet failed:', (e as any)?.message || e, (e as any)?.stack || '');
     return null;
   }
 }
@@ -56,14 +65,14 @@ async function pgSet(key: string, value: string) {
   await ensureNeon();
   if (!pgClient) return;
   try {
+    // insert a new history row (preserve previous versions)
     await pgClient.query(
-      `INSERT INTO kv_store(key, value) VALUES($1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      `INSERT INTO kv_store_history(key, value) VALUES($1, $2)`,
       [key, JSON.parse(value)]
     );
-    console.log('[calendarStore] pgSet success', key);
+    console.log('[calendarStore] pgInsert success', key);
   } catch (e) {
-    console.warn('[calendarStore] pgSet failed:', e?.message || e);
+    console.error('[calendarStore] pgInsert failed:', (e as any)?.message || e, (e as any)?.stack || '');
   }
 }
 // --- end Neon support ---
