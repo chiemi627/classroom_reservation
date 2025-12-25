@@ -3,7 +3,7 @@ name: Refresh public calendar
 on:
   schedule:
     # every 10 minutes
-    - cron:  '*/10 * * * *'
+    - cron: '*/10 * * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -15,25 +15,21 @@ jobs:
           SITE_URL: ${{ secrets.SITE_URL }}
           TOKEN: ${{ secrets.CALENDAR_REFRESH_TOKEN }}
         run: |
-          if [ -z "$SITE_URL" ]; then
-            echo "Error: SITE_URL secret is not set" >&2
-            exit 1
-          fi
-          if [ -z "$TOKEN" ]; then
-            echo "Error: CALENDAR_REFRESH_TOKEN secret is not set" >&2
-            exit 1
-          fi
-          # Normalize SITE_URL: allow either 'example.com' or 'https://example.com'
-          if echo "$SITE_URL" | grep -qE '^https?://'; then
-            base_url="$SITE_URL"
-          else
-            base_url="https://${SITE_URL}"
-          fi
-          # Remove trailing slash if present
-          base_url="${base_url%/}"
-          echo "Calling ${base_url}/api/public-calendar?refresh=1 (token will be sent in header)"
-          # Send token in header, show headers+body (-i -v), set client timeout and retries.
-          # Do not fail the workflow on non-2xx so we can inspect logs; remove '|| true' to make it strict.
-          curl -i -v --retry 3 --retry-delay 5 --retry-connrefused --max-time 120 \
+          set -euo pipefail
+          if [ -z "$SITE_URL" ]; then echo "Error: SITE_URL not set" >&2; exit 1; fi
+          if [ -z "$TOKEN" ]; then echo "Error: CALENDAR_REFRESH_TOKEN not set" >&2; exit 1; fi
+          base="${SITE_URL%/}"
+          echo "Calling ${base}/api/public-calendar?refresh=1"
+          resp_file=$(mktemp)
+          # save body to file and capture http status
+          http_status=$(curl -sS -w "%{http_code}" -o "$resp_file" \
             -H "x-refresh-token: ${TOKEN}" \
-            "${base_url}/api/public-calendar?refresh=1&fetchTimeoutMs=120000&fetchRetries=5" || true
+            "${base}/api/public-calendar?refresh=1&fetchTimeoutMs=120000&fetchRetries=5")
+          echo "HTTP status: $http_status"
+          echo "Response body:"
+          sed -n '1,200p' "$resp_file" || true
+          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
+            echo "Non-2xx response, failing workflow" >&2
+            cat "$resp_file" >&2
+            exit 1
+          fi
