@@ -70,9 +70,12 @@ async function pgGet(key: string) {
   }
 }
 
-async function pgSet(key: string, value: string) {
+async function pgSet(key: string, value: string): Promise<boolean> {
   await ensureNeon();
-  if (!pgClient) return;
+  if (!pgClient) {
+    console.warn('[calendarStore] pgSet skipped: no pgClient');
+    return false;
+  }
   try {
     // insert a new history row (preserve previous versions)
     await pgClient.query(
@@ -80,8 +83,10 @@ async function pgSet(key: string, value: string) {
       [key, JSON.parse(value)]
     );
     console.log('[calendarStore] pgInsert success', key);
+    return true;
   } catch (e) {
     console.error('[calendarStore] pgInsert failed:', (e as any)?.message || e, (e as any)?.stack || '');
+    return false;
   }
 }
 // --- end Neon support ---
@@ -176,8 +181,10 @@ async function saveToDisk() {
     const payload = JSON.stringify({ events: cachedEvents, lastFetched });
     // Try Neon first
     if (useNeon) {
+      console.log('[calendarStore] attempting pgSet (neon enabled)', { key: 'public-calendar', eventsCount: cachedEvents.length });
       try {
-        await pgSet('public-calendar', payload);
+        const ok = await pgSet('public-calendar', payload);
+        console.log('[calendarStore] pgSet result', { ok });
       } catch (e) {
         console.warn('Failed to save to Neon, will try disk:', e);
       }
