@@ -9,12 +9,20 @@ import ical from 'node-ical';
 
 // --- Neon / Postgres support (dynamic, optional) ---
 let pgClient: any = null;
-// enable Neon/Postgres when explicit flag or a connection string is present
-const useNeon = Boolean(process.env.USE_NEON || process.env.NEON_DATABASE_URL || process.env.DATABASE_URL);
+// parse env bool reliably: accept 1/true/yes/on (case-insensitive)
+function parseEnvBool(v?: string) {
+  if (!v) return false;
+  const s = v.trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(s);
+}
+const hasDbConn = Boolean(process.env.NEON_DATABASE_URL || process.env.DATABASE_URL);
+// enable Neon when explicit env true OR a DB connection string is present
+const useNeon = parseEnvBool(process.env.USE_NEON) || hasDbConn;
 
 async function ensureNeon() {
   if (pgClient || !useNeon) return;
   try {
+    console.log('[calendarStore] ensureNeon start', { useNeon, hasDbConn: Boolean(process.env.NEON_DATABASE_URL || process.env.DATABASE_URL) });
     // dynamic import so local dev without pg doesn't crash
     // @ts-ignore
     const { Client } = await import('pg');
@@ -23,6 +31,7 @@ async function ensureNeon() {
     const client = new Client({ connectionString: conn, ssl: { rejectUnauthorized: false } });
     await client.connect();
     pgClient = client;
+    console.log('[calendarStore] connected to Neon (conn present)');
     // ensure table exists (idempotent)
     // create a history table to store versions of the cache (one row per update)
     await pgClient.query(`
