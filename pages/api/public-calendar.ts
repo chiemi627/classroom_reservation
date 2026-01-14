@@ -65,16 +65,37 @@ export default async function handler(
       const timeoutMs = Number(Array.isArray(req.query.fetchTimeoutMs) ? req.query.fetchTimeoutMs[0] : req.query.fetchTimeoutMs) || Number(process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 120000);
       const retries = Number(Array.isArray(req.query.fetchRetries) ? req.query.fetchRetries[0] : req.query.fetchRetries) || Number(process.env.CALENDAR_FETCH_RETRIES ?? 3);
 
-      try {
-        const r = await calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries });
-        if (!r.ok) {
-          return res.status(500).json({ error: 'Refresh failed', details: r.error });
+      // デフォルトでは即時応答（バックグラウンドで更新）を返す。
+      // 長時間ブロッキングして同期で待ちたい場合はクエリに `wait=1` を付け、かつ環境変数 `ALLOW_BLOCKING_REFRESH=1` を設定する必要があります。
+      const waitParam = Array.isArray(req.query.wait) ? req.query.wait[0] : req.query.wait;
+      const wantBlocking = waitParam === '1' || String(waitParam).toLowerCase() === 'true';
+      const allowBlocking = process.env.ALLOW_BLOCKING_REFRESH === '1';
+
+      if (wantBlocking && allowBlocking) {
+        try {
+          const r = await calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries });
+          if (!r.ok) {
+            return res.status(500).json({ error: 'Refresh failed', details: r.error });
+          }
+          return res.status(200).json({ refreshed: true, count: r.count, fetchedAt: calendarStore.getLastFetched() });
+        } catch (e) {
+          console.error('Forced refresh threw:', e);
+          return res.status(500).json({ error: 'Forced refresh threw an exception' });
         }
-        return res.status(200).json({ refreshed: true, count: r.count, fetchedAt: calendarStore.getLastFetched() });
-      } catch (e) {
-        console.error('Forced refresh threw:', e);
-        return res.status(500).json({ error: 'Forced refresh threw an exception' });
       }
+
+      // 非同期実行パス: バックグラウンドで fetchAndStore を開始して即時 202 を返す
+      (async () => {
+        try {
+          const r = await calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries });
+          if (!r.ok) console.error('[public-calendar] background refresh failed', r.error);
+          else console.log('[public-calendar] background refresh succeeded, count=', r.count);
+        } catch (e) {
+          console.error('[public-calendar] background refresh threw:', e);
+        }
+      })();
+
+      return res.status(202).json({ accepted: true, note: 'Refresh started in background' });
     }
 
     // キャッシュが空ならバックグラウンドで更新トリガだけ行う（ブロッキング禁止）

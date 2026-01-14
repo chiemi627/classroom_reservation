@@ -28,8 +28,8 @@ jobs:
           echo "HTTP status: $http_status"
           echo "Response body:"
           sed -n '1,200p' "$resp_file" || true
-          if [ "$http_status" -lt 200 ] || [ "$http_status" -ge 300 ]; then
-            echo "Non-2xx response, failing workflow" >&2
+          if [ "$http_status" -ne 200 ] && [ "$http_status" -ne 202 ]; then
+            echo "Non-200/202 response, failing workflow" >&2
             cat "$resp_file" >&2
             exit 1
           fi
