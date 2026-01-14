@@ -47,6 +47,36 @@ export default async function handler(
     // ストア初期化（同期 fetch を非同期に変更）
     await calendarStore.initStore(calendarUrl);
 
+    // 強制更新フラグがあれば認証して同期で fetchAndStore を実行する
+    const refreshParam = Array.isArray(req.query.refresh) ? req.query.refresh[0] : req.query.refresh;
+    const wantRefresh = refreshParam === '1' || String(refreshParam).toLowerCase() === 'true';
+    if (wantRefresh) {
+      const headerToken = Array.isArray(req.headers['x-refresh-token']) ? req.headers['x-refresh-token'][0] : req.headers['x-refresh-token'];
+      const queryToken = Array.isArray(req.query.token) ? req.query.token[0] : req.query.token;
+      const providedToken = (headerToken ?? queryToken) as string | undefined;
+      const expectedToken = process.env.CALENDAR_REFRESH_TOKEN;
+      if (!expectedToken) {
+        return res.status(500).json({ error: 'CALENDAR_REFRESH_TOKEN not configured on server' });
+      }
+      if (!providedToken || providedToken !== expectedToken) {
+        return res.status(401).json({ error: 'Unauthorized: invalid refresh token' });
+      }
+
+      const timeoutMs = Number(Array.isArray(req.query.fetchTimeoutMs) ? req.query.fetchTimeoutMs[0] : req.query.fetchTimeoutMs) || Number(process.env.CALENDAR_FETCH_TIMEOUT_MS ?? 120000);
+      const retries = Number(Array.isArray(req.query.fetchRetries) ? req.query.fetchRetries[0] : req.query.fetchRetries) || Number(process.env.CALENDAR_FETCH_RETRIES ?? 3);
+
+      try {
+        const r = await calendarStore.fetchAndStore(calendarUrl, { timeoutMs, retries });
+        if (!r.ok) {
+          return res.status(500).json({ error: 'Refresh failed', details: r.error });
+        }
+        return res.status(200).json({ refreshed: true, count: r.count, fetchedAt: calendarStore.getLastFetched() });
+      } catch (e) {
+        console.error('Forced refresh threw:', e);
+        return res.status(500).json({ error: 'Forced refresh threw an exception' });
+      }
+    }
+
     // キャッシュが空ならバックグラウンドで更新トリガだけ行う（ブロッキング禁止）
     const events = calendarStore.getEvents();
     if ((!events || events.length === 0)) {
